@@ -1,9 +1,11 @@
 # Sample configuration file for LAFS data generation
+name = "LAFS Sample"
 
 # Output info
 num_items = 1000
 initial_list_size = 200
 recommendation_size = 50
+ratings_range = [1, 5]
 num_users_per_propensity= [100,100]
 
 # Matrix info

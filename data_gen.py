@@ -19,6 +19,7 @@ class DataGenParameters:
     `user_feature_propensities`: the distributions used to generate user models ( [(propensity) x number of factors] x number of user propensity groups )
     `initial_list_size`: the size of the list generated for each user (int)
     `recommendation_size`: the size of the recommendation list delivered as output (int)
+    `ratings_range`: the range to rescale final ratings
     `compatibilities_file`: the file to store user compatibilites
     `item_features_file`: the file to store item feature associations
     `user_factors_file`: the file to store user factor matrix
@@ -34,6 +35,7 @@ class DataGenParameters:
 
     def __init__(self):
         self.config = None
+        self.name = 'Unnamed'
         self.num_items = 0
         self.num_factors = 0
         self.item_feature_propensities = None
@@ -45,6 +47,7 @@ class DataGenParameters:
         self.user_feature_propensities = None       
         self.initial_list_size = 0
         self.recommendation_size = 0
+        self.ratings_range = None
         self.compatibilities_file = Path(DataGenParameters.DEFAULT_COMPATIBILITIES_FILE)
         self.item_features_file = Path(DataGenParameters.DEFAULT_ITEM_FEATURES_FILE)
         self.user_factors_file = Path(DataGenParameters.DEFAULT_USER_FACTORS_FILE)
@@ -66,6 +69,7 @@ class DataGenParameters:
 
     def setup(self):
         # Initialize class attributes from the TOML configuration
+        self.name = self.config.get('name', 'Unnamed')
         self.num_items = self.config.get('num_items')
         self.num_factors = self.config.get('num_factors')
         self.item_feature_propensities = self.config.get('item_feature_propensities')
@@ -76,6 +80,7 @@ class DataGenParameters:
         self.user_feature_propensities = self.config.get('user_feature_propensities')
         self.initial_list_size = self.config.get('initial_list_size')
         self.recommendation_size = self.config.get('recommendation_size')
+        self.ratings_range = self.config.get('ratings_range', None)
         self.compatibilities_file = Path(self.config.get('compatibilities_file',
                                                     DataGenParameters.DEFAULT_COMPATIBILITIES_FILE))
         self.item_features_file = Path(self.config.get('item_features_file',
@@ -89,12 +94,7 @@ class DataGenParameters:
 
 
     def __repr__(self):
-        return (f"DataGenParameters(num_items={self.num_items}, "
-                f"num_factors={self.num_factors}, "
-                f"std_dev_factors={self.std_dev_factors}, "
-                f"num_sensitive_features={self.num_sensitive_features}, "
-                f"feature_bias={self.feature_bias}, "
-                f"num_users_per_propensity={self.num_users_per_propensity}")
+        return (f"DataGenParameters({self.name})")
 
 
 class DataGen:
@@ -232,7 +232,7 @@ Number of factors {params.num_factors}'
         for profile_i in profile:
             factor_i = []
             for j,profile_ij in enumerate(profile_i):
-                if j+1 > self.params.num_sensitive_features:    # not an agent factor
+                if j+1 > self.params.num_sensitive_features:    # not one of the sensitive features
                     factor_ij = np.random.normal(loc=0.0, 
                                                       scale=self.params.std_dev_factors, 
                                                       size=None)
@@ -249,8 +249,11 @@ Number of factors {params.num_factors}'
     RATINGS
     '''
     
-    def generate_ratings(self):     
-        self.ratings = []
+    def generate_ratings(self):
+        '''Generate ratings by multiplying the latent factors'''
+        raw_ratings = []
+        min_rating = float('inf')
+        max_rating = float('-inf')
         
         for user, user_factor in enumerate(self.user_factors):         
             list_items = np.random.choice(self.params.num_items, 
@@ -271,23 +274,47 @@ Number of factors {params.num_factors}'
                             biases.append(feature_bias)
                     if biases:
                         bias = sum(biases)/len(biases)
+
+                rating = score - bias
+                if rating < min_rating:
+                    min_rating = rating
+                if rating > max_rating:
+                    max_rating = rating
                 
-                user_listitems_ratings.append((user, item, score - bias))
+                user_listitems_ratings.append((user, item, rating))
                 
             user_listitems_ratings.sort(
                 key=lambda user_listitems_rating: user_listitems_rating[2],
                 reverse=True)
             user_listitems_ratings = user_listitems_ratings[0:self.params.recommendation_size]
             
-            self.ratings += user_listitems_ratings
+            raw_ratings += user_listitems_ratings
+
+        if self.params.ratings_range is not None:
+            self.ratings = self.normalize_ratings(raw_ratings, min_rating, max_rating)
 
         if self.save:
             self.save_ratings(self.params.ratings_file)
+
+    def normalize_ratings(self, raw_ratings, min_rating, max_rating):
+        '''Use min-max scaling over the whole generated output to normalize ratings.'''
+        normalized = [(rating_row[0],
+                       rating_row[1],
+                       self.normalize_rating(rating_row[2], min_rating, max_rating))
+                       for rating_row in raw_ratings]
+        return normalized
+
+    def normalize_rating(self, rating, min_rating, max_rating):
+        '''First normalize from 0..1 and then adjust for the experimenter-specified range.'''
+        normalized01 = (rating - min_rating) / (max_rating - min_rating)
+        adj_factor = self.params.ratings_range[1] - self.params.ratings_range[0]
+        normalized_range = normalized01 * adj_factor + self.params.ratings_range[0]
+        return normalized_range
     
     def save_ratings(self, filename):
         with open(filename, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile, delimiter=',')
-            fields = ["user_id", "item_id", "score"]
+            fields = ["user_id", "item_id", "rating"]
             writer.writerow(fields)
     
             for user, item, score in self.ratings:
@@ -314,6 +341,8 @@ if __name__ == "__main__":
 
     params = DataGenParameters()
     params.load(config_file)
+
+    print(f'Generating data using {params} loaded from "{config_file}"')
 
     data_gen = DataGen(params, save=True)
 
