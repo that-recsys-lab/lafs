@@ -292,6 +292,8 @@ Number of factors {params.num_factors}'
 
         if self.params.ratings_range is not None:
             self.ratings = self.normalize_ratings(raw_ratings, min_rating, max_rating)
+        else:
+            self.ratings = raw_ratings
 
         if self.save:
             self.save_ratings(self.params.ratings_file)
